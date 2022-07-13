@@ -1,6 +1,8 @@
 class Device(object):
     _gpib_address = "GPIB0::5::INSTR"
-    _host = None
+    _host = ('192.168.1.91', 42922)
+    _slot = 1
+
     def __init__(self):
         if self._host is not None:
             from labd.libs._pyvisa import PyvisaProxy
@@ -10,43 +12,35 @@ class Device(object):
 
         rm = pyvisa.ResourceManager()
         self._inst = rm.open_resource(self._gpib_address)
-
+    
     @property
     def output(self) -> bool:
-        return bool(int(self._inst.query('OUTP?').strip()))
+        r = self._inst.query(f':SLOT {self._slot};:LASER?').strip()
+        if r == ':LASER ON':
+            return True
+        elif r == ':LASER OFF':
+            return False
 
     @output.setter
     def output(self, output: bool):
         if output:
-            self._inst.write('OUTP ON')
+            self._inst.write(f':SLOT {self._slot};:LASER ON')
         else: 
-            self._inst.write('OUTP OFF')
-
-    @property
-    def voltage_setpoint(self) -> float:
-        return float(self._inst.query('VOLT?').strip())
-
-    @voltage_setpoint.setter
-    def voltage_setpoint(self, voltage_setpoint: float):
-        self._inst.write(f'VOLT {voltage_setpoint}')
-    
-    @property
-    def measured_voltage(self) -> float:
-        return float(self._inst.query('MEAS:VOLT?').strip())
+            self._inst.write(f':SLOT {self._slot};:LASER OFF')
 
     @property
     def current_setpoint(self) -> float:
-        return float(self._inst.query('CURR?').strip())
+        return float(self._inst.query(f':SLOT {self._slot};:ILD:SET?')[9:])
 
     @current_setpoint.setter
     def current_setpoint(self, current_setpoint: float):
-        self._inst.write(f'CURR {current_setpoint}')
-    
+        self._inst.write(f':SLOT {self._slot};:ILD:SET {current_setpoint}')
+
     @property
-    def measured_current(self) -> float:
-        return float(self._inst.query('MEAS:CURR?').strip())
+    def optical_power(self) -> float:
+        return float(self._inst.query(f':SLOT {self._slot};:POPT:ACT?')[10:])
 
-
+import os
 import socket
 import struct
 
@@ -61,7 +55,7 @@ def _comm(data, host=('localhost', 4292), timeout=1.0):
 class DeviceProxy(object):
     def __init__(self, inithost=('localhost', 4292)):
         self._inithost = inithost
-        r = _comm('Ensure devs test_psu.py'.encode(), inithost, timeout=10)
+        r = _comm(f'Ensure devs {os.path.basename(__file__)}'.encode(), inithost, timeout=10)
         self._devhost = inithost[0], int(r.decode())
 
     def __del__(self):
@@ -81,20 +75,6 @@ class DeviceProxy(object):
         _comm(f'output_setattr {int(output)}'.encode(), self._devhost)
     
     @property
-    def voltage_setpoint(self):
-        r = _comm(f'voltage_setpoint_getattr'.encode(), self._devhost)
-        return struct.unpack('>f', r)[0]
-
-    @voltage_setpoint.setter
-    def voltage_setpoint(self, voltage_setpoint):
-        _comm(f'voltage_setpoint_setattr {voltage_setpoint}'.encode(), self._devhost)
-    
-    @property
-    def measured_voltage(self):
-        r = _comm(f'measured_voltage_getattr'.encode(), self._devhost)
-        return struct.unpack('>f', r)[0]
-    
-    @property
     def current_setpoint(self):
         r = _comm(f'current_setpoint_getattr'.encode(), self._devhost)
         return struct.unpack('>f', r)[0]
@@ -104,46 +84,30 @@ class DeviceProxy(object):
         _comm(f'current_setpoint_setattr {current_setpoint}'.encode(), self._devhost)
     
     @property
-    def measured_current(self):
-        r = _comm(f'measured_current_getattr'.encode(), self._devhost)
+    def optical_power(self):
+        r = _comm(f'optical_power_getattr'.encode(), self._devhost)
         return struct.unpack('>f', r)[0]
 
 def handle_request(conn):
     global dev
     data = conn.recv(1024)
     action, _, args = data.partition(b" ")
-
     print(__file__, action, args)
     
     if action == b"_echo":
         conn.send(args)
     elif action == b"output_getattr":
-        output = dev.output
-        conn.send(int(output).to_bytes(1, 'big'))
+        conn.send(int(dev.output).to_bytes(1, 'big'))
     elif action == b"output_setattr":
-        output = int(args) 
-        dev.output = output
+        dev.output = bool(int(args))
         conn.send(b'')
-    elif action == b'voltage_setpoint_getattr':
-        voltage_setpoint = dev.voltage_setpoint
-        conn.send(struct.pack('>f', float(voltage_setpoint)))
-    elif action == b'voltage_setpoint_setattr':
-        voltage_setpoint = float(args)
-        dev.voltage_setpoint = voltage_setpoint
-        conn.send(b'')
-    elif action == b'measured_voltage_getattr':
-        measured_voltage = dev.measured_voltage
-        conn.send(struct.pack('>f', float(measured_voltage)))
     elif action == b'current_setpoint_getattr':
-        current_setpoint = dev.current_setpoint
-        conn.send(struct.pack('>f', float(current_setpoint)))
+        conn.send(struct.pack('>f', float(dev.current_setpoint)))
     elif action == b'current_setpoint_setattr':
-        current_setpoint = float(args)
-        dev.current_setpoint = current_setpoint
+        dev.current_setpoint = float(args)
         conn.send(b'')
-    elif action == b'measured_current_getattr':
-        measured_current = dev.measured_current
-        conn.send(struct.pack('>f', float(measured_current)))
+    elif action == b'optical_power_getattr':
+        conn.send(struct.pack('>f', float(dev.optical_power)))
 
 
 if __name__ == "__main__":
